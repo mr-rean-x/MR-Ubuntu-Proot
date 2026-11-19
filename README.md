@@ -11,12 +11,21 @@ curl -fsSL https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-r
 bash mr-root.sh install
 ```
 
-Or with `wget`:
+Or with `wget` (use this if you see `curl: not found`):
 
 ```bash
-wget https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-root.sh
+wget https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-root.sh -O mr-root.sh
 bash mr-root.sh install
 ```
+
+Or with `python3` (works even when both curl and wget are missing — Jupyter hosts always have python3):
+
+```bash
+python3 -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-root.sh','mr-root.sh')"
+bash mr-root.sh install
+```
+
+> Paste ONE line at a time, press Enter, and wait for it to finish before the next line. Pasting both lines together can mangle them in web terminals.
 
 After install, enter Ubuntu any time with:
 
