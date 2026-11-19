@@ -94,6 +94,7 @@ JTG repo: https://github.com/JishnuTheGamer/Jtg
 14. **No downloader at all on minimal hosts (found 2026-11-20 — Render Jupyter has no curl).** The whole install died before it started. **Fix:** downloader tries wget → curl → **python3** (urllib), so any Jupyter host works.
 15. **`shift || true` kills dash (found by live test 2026-11-20).** `shift` is a special builtin — in non-interactive `/bin/sh` its error is fatal even after `||`. **Fix:** guarded shift (`if [ $# -gt 0 ]; then shift; fi`).
 16. **`echo -e` prints literal `-e` under dash (found by live test 2026-11-20).** All log lines looked broken in `/bin/sh` terminals. **Fix:** `printf '%b\n'` everywhere — plus the whole one-paste script is POSIX-only (no `pipefail`, no `[[ ]]`), so pasting into dash works.
+17. **Setup failure killed the whole install before root (found by live test 2026-11-20).** If `apt-get update` failed (e.g. proxy-blocked host), `set -e` aborted everything and the user never got a root shell. **Fix:** setup script has no `set -e` — every step reports and continues — and `do_setup` always returns 0, so you ALWAYS land in root. Retry setup later from inside with `bash /root/.mr-setup.sh`.
 
 ## What is NOT fixed (honest limits)
 

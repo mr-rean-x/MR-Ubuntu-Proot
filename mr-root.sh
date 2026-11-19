@@ -252,18 +252,24 @@ write_setup_inside() {
     # First-boot setup that runs INSIDE Ubuntu — this is what makes it JTG-ready.
     cat > "$ROOTFS_DIR/root/.mr-setup.sh" <<'SETUP_EOF'
 #!/bin/bash
-set -e
+# No `set -e` on purpose: one failed step (e.g. apt blocked by a proxy)
+# must NOT kill the whole setup — report it and keep going.
 export DEBIAN_FRONTEND=noninteractive
 echo "[*] MR ROOT first-boot setup — apt + Node 20 + git + PM2 ..."
-apt-get update -y
-apt-get install -y --no-install-recommends curl wget git ca-certificates gnupg python3 unzip zip nano procps
+apt-get update -y || echo "[!] apt-get update FAILED (DNS/proxy?). Check: cat /etc/resolv.conf — then re-run: bash /root/.mr-setup.sh"
+apt-get install -y --no-install-recommends curl wget git ca-certificates gnupg python3 unzip zip nano procps || echo "[!] apt install had errors — continuing with whatever is installed."
 if ! command -v node >/dev/null 2>&1 || ! node -v 2>/dev/null | grep -q "^v20"; then
-    echo "[*] Installing Node.js 20 (NodeSource)..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get install -y nodejs
+    if command -v curl >/dev/null 2>&1; then
+        echo "[*] Installing Node.js 20 (NodeSource)..."
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || echo "[!] NodeSource setup failed."
+        apt-get install -y nodejs || echo "[!] nodejs install failed."
+    else
+        echo "[!] curl missing, cannot install Node 20 — fix apt first, then re-run this script."
+    fi
 fi
-node -v; npm -v
-npm install -g pm2 2>/dev/null || echo "[!] pm2 install failed — JTG can still run with npm, pm2 is optional."
+if command -v node >/dev/null 2>&1; then node -v; npm -v; else echo "[!] Node NOT installed."; fi
+if command -v npm >/dev/null 2>&1; then npm install -g pm2 2>/dev/null || echo "[!] pm2 install failed — optional, JTG can run with npm."; fi
+echo "[*] Setup finished."
 SETUP_EOF
     chmod +x "$ROOTFS_DIR/root/.mr-setup.sh"
 }
@@ -277,15 +283,19 @@ run_inside() {
 }
 
 do_setup() {
+    # BUG FIX #17: setup must NEVER kill the install. If apt/Node fails
+    # (proxy-blocked host, no network), warn and STILL enter root — the
+    # user can retry setup later from inside with: bash /root/.mr-setup.sh
     info "Running first-boot setup inside Ubuntu (apt + Node 20 + git + PM2)..."
     if [ "$WITH_JAVA" = "1" ]; then
         info "WITH_JAVA: also installing openjdk-21 (JTG needs it, takes ~10-15 min)..."
-        run_inside "export DEBIAN_FRONTEND=noninteractive; bash /root/.mr-setup.sh; apt-get install -y openjdk-21-jdk; java -version 2>&1 | head -1"
+        run_inside "export DEBIAN_FRONTEND=noninteractive; bash /root/.mr-setup.sh; apt-get install -y openjdk-21-jdk || echo '[!] Java install failed — retry inside: apt-get install -y openjdk-21-jdk'; java -version 2>&1 | head -1 || true" || warn "Setup step had errors — root still works, retry inside with: bash /root/.mr-setup.sh"
     else
-        run_inside "bash /root/.mr-setup.sh"
+        run_inside "bash /root/.mr-setup.sh" || warn "Setup step had errors — root still works, retry inside with: bash /root/.mr-setup.sh"
     fi
-    ok "Setup done."
-    run_inside 'echo "node: $(node -v 2>/dev/null || echo MISSING) / npm: $(npm -v 2>/dev/null || echo MISSING)"' || warn "Could not verify node version inside Ubuntu."
+    ok "Setup step finished."
+    run_inside 'echo "node: $(node -v 2>/dev/null || echo MISSING) / npm: $(npm -v 2>/dev/null || echo MISSING)"' || true
+    return 0
 }
 
 do_install() {
@@ -304,7 +314,7 @@ do_install() {
     write_setup_inside
     printf 'mr-root-version=%s\nubuntu=%s\narch=%s\ninstalled=%s\n' "$VERSION" "$UBUNTU_VERSION" "$ARCH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MARKER"
     if [ "$DO_SETUP" = "1" ]; then
-        do_setup
+        do_setup || true
     else
         warn "Setup skipped (--no-setup). Run 'bash mr-root.sh setup' later for Node 20 + git."
     fi
