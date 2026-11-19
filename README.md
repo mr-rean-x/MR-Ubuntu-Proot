@@ -1,8 +1,20 @@
-# MR ROOT v2 — Powerful Ubuntu Proot Installer
+# MR ROOT v3 — Powerful Ubuntu Proot Installer
 
 **MR REAN custom repo.** Ubuntu 20.04 (or 22.04) inside any Linux host **without root, without Docker, without sudo** — using PRoot. Built for Jupyter / Render / free hosts where the original FOX YTOUX script kept breaking.
 
-One file does everything: `mr-root.sh`
+## ⚡ ONE COMMAND — paste this, get root
+
+Works even when the host has **no curl and no wget** (Jupyter always has python3):
+
+```bash
+python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-root.sh','mr-root.sh');os.execv('/bin/bash',['bash','mr-root.sh','install'])"
+```
+
+One line, press Enter, Ubuntu installs and drops you into a root shell. Already installed? It skips the download and goes straight to root.
+
+**Or paste the whole script like the original:** copy the full [`mr-root-one.sh`](mr-root-one.sh) file into your terminal and press Enter — no download needed at all, works even in `/bin/sh` (dash) terminals.
+
+One file does everything: `mr-root.sh` (installer) and `mr-root-one.sh` (v3 one-paste version)
 
 ## One-line install
 
@@ -79,6 +91,9 @@ JTG repo: https://github.com/JishnuTheGamer/Jtg
 11. **No seccomp fallback.** On hosts where proot's seccomp is blocked, launch just died. **Fix:** launcher retries with `PROOT_NO_SECCOMP=1`.
 12. **No commands / flags at all.** **Fix:** `install / start / exec / setup / jtg / status / clean / help`, `--ubuntu`, `--dir`, `--no-setup`, `--with-java`.
 13. **`tar -xzf` fails as a non-root user (found by live test 2026-11-20).** Plain tar tries to chown files to uid 0, exits non-zero, and the old script died with "Extraction failed" even though every file was extracted fine. **Fix:** `tar --no-same-owner` + judge success by content (`bin/sh` + `/usr/bin`), not tar's exit code.
+14. **No downloader at all on minimal hosts (found 2026-11-20 — Render Jupyter has no curl).** The whole install died before it started. **Fix:** downloader tries wget → curl → **python3** (urllib), so any Jupyter host works.
+15. **`shift || true` kills dash (found by live test 2026-11-20).** `shift` is a special builtin — in non-interactive `/bin/sh` its error is fatal even after `||`. **Fix:** guarded shift (`if [ $# -gt 0 ]; then shift; fi`).
+16. **`echo -e` prints literal `-e` under dash (found by live test 2026-11-20).** All log lines looked broken in `/bin/sh` terminals. **Fix:** `printf '%b\n'` everywhere — plus the whole one-paste script is POSIX-only (no `pipefail`, no `[[ ]]`), so pasting into dash works.
 
 ## What is NOT fixed (honest limits)
 
@@ -90,6 +105,7 @@ JTG repo: https://github.com/JishnuTheGamer/Jtg
 ## Files
 
 - `mr-root.sh` — the whole installer (single file, everything above)
+- `mr-root-one.sh` — v3 ADVANCE one-paste version: copy the whole file into a terminal, press Enter, get root. No download of itself, dash-safe, no setup by default (fast root — run `bash /root/.mr-setup.sh` inside for Node 20 + git + PM2)
 - `README.md` — this file
 
 ## Credits

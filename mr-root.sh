@@ -20,21 +20,25 @@
 # ============================================================
 set -Eeuo pipefail
 
-VERSION="2.0.0-MR"
+VERSION="2.1.0-MR"
 UBUNTU_VERSION="${UBUNTU_VERSION:-20.04}"
 ROOTFS_DIR="${ROOTFS_DIR:-$HOME/mr-ubuntu}"
 DO_SETUP=1
 WITH_JAVA=0
 YES=0
 CMD="${1:-install}"
-shift || true
+# NOTE: plain `shift || true` kills dash (shift is a special builtin — its
+# error is fatal in non-interactive sh even after ||). Guard it instead.
+if [ $# -gt 0 ]; then shift; fi
 
 # ---------- colours / logging ----------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()  { echo -e "${CYAN}[*]${NC} $*"; }
-ok()    { echo -e "${GREEN}[+]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
-error() { echo -e "${RED}[x]${NC} $*" >&2; }
+# NOTE: printf '%b' — NOT echo -e. dash's echo prints a literal "-e"
+# and no colours, so the log lines looked broken when pasted into /bin/sh.
+info()  { printf '%b\n' "${CYAN}[*]${NC} $*"; }
+ok()    { printf '%b\n' "${GREEN}[+]${NC} $*"; }
+warn()  { printf '%b\n' "${YELLOW}[!]${NC} $*"; }
+error() { printf '%b\n' "${RED}[x]${NC} $*" >&2; }
 die()   { error "$*"; exit 1; }
 
 banner() {
@@ -86,7 +90,9 @@ PROOT_FALLBACK="https://cdn.jsdelivr.net/gh/foxytouxxx/freeroot@main/proot-${ARC
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required tool: $1 — install it first."; }
 
 download_file() {
-    # download_file <url> <dest> — resume capable, 5 tries, wget or curl
+    # download_file <url> <dest> — resume capable, 5 tries.
+    # Tries wget, then curl, then python3 (Jupyter hosts always have python3,
+    # even when curl AND wget are both missing — that is why this fallback exists).
     local url="$1" dest="$2" tries=0
     while [ "$tries" -lt 5 ]; do
         tries=$((tries + 1))
@@ -94,8 +100,10 @@ download_file() {
             if wget -c --tries=3 --timeout=60 --waitretry=3 --no-hsts -O "$dest" "$url"; then return 0; fi
         elif command -v curl >/dev/null 2>&1; then
             if curl -fL -C - --retry 3 --connect-timeout 30 -o "$dest" "$url"; then return 0; fi
+        elif command -v python3 >/dev/null 2>&1; then
+            if python3 -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" "$url" "$dest"; then return 0; fi
         else
-            die "Need wget or curl to download files."
+            die "Need wget, curl or python3 to download files."
         fi
         warn "Download try $tries/5 failed for $url — retrying..."
         sleep 3
@@ -287,7 +295,7 @@ do_install() {
     echo "Ubuntu: $UBUNTU_VERSION ($UBUNTU_RELEASE)"
     echo
     need_cmd tar; need_cmd gzip
-    command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || die "Need wget or curl."
+    command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || die "Need wget, curl or python3."
     check_disk
     install_rootfs
     install_proot
