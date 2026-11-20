@@ -13,7 +13,16 @@
 #
 #  MENU:  1) Full Setup (Panel + Node)  2) Panel only  3) Node only
 #         4) Check status              5) Exit
-#  DIRECT: bash mr-panel-setup.sh full|panel|node|status [--dry-run]
+#  DIRECT: bash mr-panel-setup.sh full|panel|node|status|tunnel [--dry-run]
+#  TUNNEL (v1.1): bash mr-panel-setup.sh tunnel — installs cloudflared,
+#    runs YOUR Cloudflare tunnel (token typed in the terminal, hidden,
+#    never in chat/repo) as a systemd service + sets panel APP_URL to
+#    the tunnel domain. Token lives only in the unit file on your VPS.
+#  ROUTES (v1.1): panel.<domain> -> localhost:80, node.<domain> -> localhost:8080 —
+#    dashboard-e tunnel-er Public Hostnames-e add koro (script nije check kore).
+#  NODE DOMAIN (v1.1): node FQDN is node.<panel-domain> by default
+#    (override: MR_NODE_DOMAIN). Point node.<domain> DNS to the node
+#    server (A record) or add it as a tunnel Public Hostname (:8080).
 #  PREVIEW (installs nothing): bash mr-panel-setup.sh full --dry-run
 #
 #  VERIFIED AGAINST (official Pterodactyl v1 docs + panel v1.15.2 source):
@@ -46,7 +55,7 @@
 # POSIX-safe: works even when pasted into /bin/sh (dash), which has no pipefail.
 set -eu
 
-VERSION="1.0.0-MR-PANAL"
+VERSION="1.1.0-MR-PANAL"
 PANEL_VERSION="v1.15.2"
 WINGS_VERSION="v1.13.5"
 PHP_VER="8.3"
@@ -57,7 +66,7 @@ DRY_RUN=0
 MODE=""
 for _a in "$@"; do
     case "$_a" in
-        full|panel|node|status|help|--help|-h) MODE="$_a" ;;
+        full|panel|node|status|tunnel|help|--help|-h) MODE="$_a" ;;
         --dry-run) DRY_RUN=1 ;;
         *) printf 'Unknown argument: %s\n' "$_a" >&2; exit 1 ;;
     esac
@@ -463,6 +472,9 @@ EOF
 # ---------- node / wings ----------
 create_location_node() {
     info "Creating location + node (auto)..."
+    # Node subdomain: node.<panel-domain> by default (override: MR_NODE_DOMAIN)
+    NODE_DOMAIN="${MR_NODE_DOMAIN:-node.$DOMAIN}"
+    info "Node domain: $NODE_DOMAIN (panel: $DOMAIN)"
     local cli loc_id node_ram node_disk node_out
     local db_name db_user db_pass
     # Node size: host total minus reserve for panel/OS (computed in both modes)
@@ -474,7 +486,7 @@ create_location_node() {
     info "Node size: ${node_ram}MB RAM, ${node_disk}GB disk (host total ${total_ram}MB/${total_disk}GB minus reserve)."
     if [ "$DRY_RUN" = "1" ]; then
         printf '%b\n' "${YELLOW}[dry-run]${NC} mariadb: INSERT location (mr1, MR Location) + SELECT id"
-        printf '%b\n' "${YELLOW}[dry-run]${NC} php artisan p:node:make --name=node1 --description=MR Node --locationId=1 --fqdn=$DOMAIN --scheme=$SCHEME --public=1 --proxy=0 --maintenance=0 --maxMemory=$node_ram --overallocateMemory=0 --maxDisk=$node_disk --overallocateDisk=0 --uploadSize=100 --daemonListeningPort=8080 --daemonSFTPPort=2022 --daemonBase=/var/lib/pterodactyl/volumes"
+        printf '%b\n' "${YELLOW}[dry-run]${NC} php artisan p:node:make --name=node1 --description=MR Node --locationId=1 --fqdn=$NODE_DOMAIN --scheme=$SCHEME --public=1 --proxy=0 --maintenance=0 --maxMemory=$node_ram --overallocateMemory=0 --maxDisk=$node_disk --overallocateDisk=0 --uploadSize=100 --daemonListeningPort=8080 --daemonSFTPPort=2022 --daemonBase=/var/lib/pterodactyl/volumes"
         printf '%b\n' "${YELLOW}[dry-run]${NC} mariadb: INSERT allocations ports 25565-25575"
         NODE_ID=1; return 0
     fi
@@ -491,10 +503,10 @@ create_location_node() {
     [ -n "$loc_id" ] || die "Could not get location id."
     ok "Location id: $loc_id"
     cd "$PANEL_DIR" || die "Cannot enter $PANEL_DIR"
-    node_out="$(php artisan p:node:make --name="node1" --description="MR Node" --locationId="$loc_id" --fqdn="$DOMAIN" --scheme="$SCHEME" --public=1 --proxy=0 --maintenance=0 --maxMemory="$node_ram" --overallocateMemory=0 --maxDisk="$node_disk" --overallocateDisk=0 --uploadSize=100 --daemonListeningPort=8080 --daemonSFTPPort=2022 --daemonBase="/var/lib/pterodactyl/volumes" 2>&1)" || { printf '%s\n' "$node_out"; die "Node creation failed."; }
+    node_out="$(php artisan p:node:make --name="node1" --description="MR Node" --locationId="$loc_id" --fqdn="$NODE_DOMAIN" --scheme="$SCHEME" --public=1 --proxy=0 --maintenance=0 --maxMemory="$node_ram" --overallocateMemory=0 --maxDisk="$node_disk" --overallocateDisk=0 --uploadSize=100 --daemonListeningPort=8080 --daemonSFTPPort=2022 --daemonBase="/var/lib/pterodactyl/volumes" 2>&1)" || { printf '%s\n' "$node_out"; die "Node creation failed."; }
     NODE_ID="$(printf '%s' "$node_out" | sed -n 's/.*has an id of \([0-9]*\).*/\1/p' | head -1)"
     [ -n "$NODE_ID" ] || { printf '%s\n' "$node_out"; die "Node created but its id could not be read."; }
-    ok "Node created: node1 (id $NODE_ID, ${node_ram}MB RAM, ${node_disk}GB disk, $SCHEME://$DOMAIN)"
+    ok "Node created: node1 (id $NODE_ID, ${node_ram}MB RAM, ${node_disk}GB disk, $SCHEME://$NODE_DOMAIN)"
     # Default allocations: ports 25565-25575 on the server IP (so you can create servers right away)
     local srv_ip p
     srv_ip="$(public_ip)"
@@ -570,6 +582,122 @@ EOF
     if systemctl is-active --quiet wings; then ok "Wings is RUNNING."; else warn "Wings service is not active — check: systemctl status wings"; fi
 }
 
+# ---------- tunnel (cloudflared) ----------
+install_cloudflared() {
+    if command -v cloudflared >/dev/null 2>&1; then ok "cloudflared already installed: $(cloudflared --version 2>/dev/null | head -1)"; return 0; fi
+    local arch deb_url
+    case "$(uname -m)" in
+        x86_64) arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) die "Unsupported CPU architecture: $(uname -m) (cloudflared needs amd64 or arm64)." ;;
+    esac
+    deb_url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$arch.deb"
+    info "Downloading cloudflared ($arch)..."
+    download_file "$deb_url" /tmp/cloudflared.deb || die "cloudflared download failed."
+    if [ "$DRY_RUN" = "1" ]; then printf '%b\n' "${YELLOW}[dry-run]${NC} dpkg -i /tmp/cloudflared.deb"; return 0; fi
+    dpkg -i /tmp/cloudflared.deb >>/tmp/mr-cloudflared.log 2>&1 || { apt_install -f || true; dpkg -i /tmp/cloudflared.deb >>/tmp/mr-cloudflared.log 2>&1 || die "cloudflared install failed (see /tmp/mr-cloudflared.log)."; }
+    command -v cloudflared >/dev/null 2>&1 || die "cloudflared still missing after install."
+    ok "cloudflared installed: $(cloudflared --version 2>/dev/null | head -1)"
+}
+
+do_tunnel() {
+    check_prereqs
+    echo "============================================"
+    echo "       MR PANAL — TUNNEL (Cloudflare)"
+    echo "============================================"
+    echo "  Cloudflare dashboard-e giye: Zero Trust -> Networks -> Tunnels"
+    echo "  -> Create tunnel -> token copy koro. Token chat-e diba NA —"
+    echo "  ekhane terminal-e likhba (lukano thakbe, file-eo jabe na)."
+    echo
+    local TOKEN="" TUN_DOMAIN=""
+    if [ -n "${MR_TUNNEL_TOKEN:-}" ]; then
+        TOKEN="$MR_TUNNEL_TOKEN"
+    else
+        ask_secret TOKEN "Tunnel token (Cloudflare theke copy kora)"
+        [ -n "$TOKEN" ] || die "Token dite hobe."
+    fi
+    if [ -n "${MR_TUNNEL_DOMAIN:-}" ]; then
+        TUN_DOMAIN="$MR_TUNNEL_DOMAIN"
+    else
+        while :; do
+            ask TUN_DOMAIN "Tunnel domain (example: panel.example.com)" ""
+            valid_domain "$TUN_DOMAIN" && break
+            error "Bad domain '$TUN_DOMAIN'."
+        done
+    fi
+    install_cloudflared
+    if [ "$DRY_RUN" = "1" ]; then
+        printf '%b\n' "${YELLOW}[dry-run]${NC} write /etc/systemd/system/cloudflared.service + enable + restart cloudflared"
+        printf '%b\n' "${YELLOW}[dry-run]${NC} panel APP_URL -> https://$TUN_DOMAIN"
+        TOKEN=""
+        return 0
+    fi
+    cat > /etc/systemd/system/cloudflared.service <<EOF
+[Unit]
+Description=Cloudflare Tunnel (MR PANAL)
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token $TOKEN
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 600 /etc/systemd/system/cloudflared.service
+    systemctl daemon-reload
+    systemctl enable cloudflared >/dev/null 2>&1 || true
+    systemctl restart cloudflared || die "cloudflared service failed to start — check: systemctl status cloudflared"
+    sleep 5
+    if systemctl is-active --quiet cloudflared; then ok "cloudflared RUNNING."; else warn "cloudflared not active — check: journalctl -u cloudflared -n 50"; fi
+    if panel_installed; then
+        env_set APP_URL "https://$TUN_DOMAIN"
+        (cd "$PANEL_DIR" && php artisan config:clear >/dev/null 2>&1 || true)
+        systemctl reload nginx 2>/dev/null || true
+        systemctl restart pteroq 2>/dev/null || true
+        ok "Panel URL set to https://$TUN_DOMAIN"
+    else
+        warn "Panel ekhono install hoy nai — age panel install koro, tarpor tunnel domain-e APP_URL set korte 'tunnel' abar chalao."
+    fi
+    # --- routes: panel + node (dashboard Public Hostnames) ---
+    case "$TUN_DOMAIN" in
+        *.*.*) ROOT_DOM="${TUN_DOMAIN#*.}" ;;
+        *) ROOT_DOM="$TUN_DOMAIN" ;;
+    esac
+    NODE_TUN_DOMAIN="node.$ROOT_DOM"
+    echo
+    echo "ROUTES — Cloudflare dashboard-e tunnel-er Public Hostnames-e 2ta add koro:"
+    echo "  1) Hostname: $TUN_DOMAIN | Service: http://localhost:80   (panel)"
+    echo "  2) Hostname: $NODE_TUN_DOMAIN | Service: http://localhost:8080   (node/Wings)"
+    {
+        echo "MR PANAL TUNNEL ROUTES ($(date))"
+        echo "Panel: $TUN_DOMAIN -> http://localhost:80"
+        echo "Node:  $NODE_TUN_DOMAIN -> http://localhost:8080"
+    } > ~/tunnel-routes.txt
+    echo "  (saved: ~/tunnel-routes.txt)"
+    local code code2
+    code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://$TUN_DOMAIN" 2>/dev/null || echo 000)"
+    code2="$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://$NODE_TUN_DOMAIN" 2>/dev/null || echo 000)"
+    case "$code" in
+        200|301|302) ok "Panel route LIVE: https://$TUN_DOMAIN (HTTP $code)" ;;
+        *) warn "Panel route ekhono khultese na (HTTP $code) — dashboard-e hostname add korso to? 1-2 min wait koro." ;;
+    esac
+    case "$code2" in
+        200|301|302|404) ok "Node route LIVE: https://$NODE_TUN_DOMAIN (HTTP $code2)" ;;
+        *) warn "Node route ekhono khultese na (HTTP $code2) — dashboard-e node hostname add korso to?" ;;
+    esac
+    echo
+    echo "============================================"
+    echo "       MR PANAL — TUNNEL READY"
+    echo "============================================"
+    echo "  Panel: https://$TUN_DOMAIN"
+    echo "  Node:  https://$NODE_TUN_DOMAIN"
+    echo "  Check: systemctl status cloudflared"
+    echo "  Node-er FQDN bodlate hole: panel-e Admin -> Nodes -> node1 -> FQDN"
+    TOKEN=""
+}
+
 # ---------- status ----------
 do_status() {
     show_banner
@@ -629,7 +757,7 @@ do_node() {
     echo "============================================"
     echo "       MR PANAL — NODE READY"
     echo "============================================"
-    echo "  Node: node1 (id ${NODE_ID:-?}) on $SCHEME://$DOMAIN"
+    echo "  Node: node1 (id ${NODE_ID:-?}) on $SCHEME://$NODE_DOMAIN"
     if systemctl is-active --quiet wings 2>/dev/null; then echo "  Wings: running"; else echo "  Wings: not running"; fi
     echo "  Check the panel: Admin -> Nodes -> node1 should be green."
 }
@@ -680,12 +808,13 @@ show_help() {
     echo "  panel         Panel only"
     echo "  node          Node (Wings) only — panel must already exist here"
     echo "  status        Check panel + Wings status"
+    echo "  tunnel        Cloudflare Tunnel — install cloudflared + run your tunnel + set panel URL"
     echo "  help          This help"
     echo "  --dry-run     Print every step, install nothing"
     echo
     echo "The installer asks only: domain, admin username, admin password,"
     echo "admin email. Node size is automatic (host total minus reserve)."
-    echo "Env overrides: MR_DOMAIN MR_ADMIN_USER MR_ADMIN_PASS MR_ADMIN_EMAIL"
+    echo "Env overrides: MR_DOMAIN MR_ADMIN_USER MR_ADMIN_PASS MR_ADMIN_EMAIL MR_NODE_DOMAIN MR_TUNNEL_TOKEN MR_TUNNEL_DOMAIN"
 }
 
 # ---------- main ----------
@@ -709,6 +838,7 @@ case "$MODE" in
     panel)  do_panel ;;
     node)   do_node ;;
     status) do_status ;;
+    tunnel) do_tunnel ;;
     help|--help|-h) show_help ;;
     *) error "Unknown command: $MODE"; show_help; exit 1 ;;
 esac
