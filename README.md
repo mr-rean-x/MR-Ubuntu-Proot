@@ -14,6 +14,51 @@ One line, press Enter, Ubuntu installs and drops you into a root shell. Already 
 
 **Or paste the whole script like the original:** copy the full [`mr-root-one.sh`](mr-root-one.sh) file into your terminal and press Enter — no download needed at all, works even in `/bin/sh` (dash) terminals.
 
+## ⚡ MR VPS POWER — Docker / Privileged / Kernel / Networking / Systemd / KVM
+
+One command — checks your VPS and sets up everything that **can** be set up, then prints a true ✅/❌ report:
+
+```bash
+python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-vps-power.sh','mr-vps-power.sh');os.execv('/bin/bash',['bash','mr-vps-power.sh','install'])"
+```
+
+Check only (installs nothing, safe anywhere):
+
+```bash
+bash mr-vps-power.sh check
+```
+
+What it does: installs Docker (`docker.io`, starts the daemon via systemd or directly, Podman rootless fallback), enables IP forwarding, checks kernel module loading, checks `/dev/kvm` (loads the kvm module if the CPU supports it), reports systemd status.
+
+**Honest limits:** Privileged / Kernel / KVM are decided by the HOST, not by any command inside. If the host did not give your VPS `CAP_SYS_ADMIN`, `/dev/kvm` or module loading, no script can create them from inside — that would be breaking out of the container, and this script does NOT do exploits. On a real root KVM VPS all six go green. On free container hosts (Render / Jupyter / Altare sandbox) Docker daemon, systemd-as-PID-1 and KVM stay blocked by the host — the script tells you exactly which and why.
+
+Fixes in v1.0.0: apt calls are time-boxed (slow/blocked mirrors fail fast instead of hanging), `apt-get update` runs once per run, and the Docker report now says the TRUE cause — apt download failure vs host block (older message blamed the host even when the proxy broke apt).
+
+## 🖥️ MR NESTED VPS — VPS-er vitore VPS banao (QEMU/KVM)
+
+Check first (5 seconds, installs nothing):
+
+```bash
+python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-nested-vps.sh','mr-nested-vps.sh');os.execv('/bin/bash',['bash','mr-nested-vps.sh','check'])"
+```
+
+Make a nested VPS (Ubuntu 22.04, login `mrrean` / password you choose):
+
+```bash
+bash mr-nested-vps.sh create myvps1 2048 20 2 --password mysecret123
+#                         ^name  ^RAM MB ^disk GB ^CPUs
+bash mr-nested-vps.sh list
+bash mr-nested-vps.sh stop myvps1
+bash mr-nested-vps.sh start myvps1
+bash mr-nested-vps.sh delete myvps1 --yes
+```
+
+**Honest limits:** nested VPS shares the HOST's real RAM/disk/CPU — "joto iccha" is not real. Host-e 6GB RAM thakle sob nested VPS miliye 6GB-er beshi dite parba na; script-ta hiseb kore na dile exact number soho refuse kore. It needs a REAL KVM VPS with nested virt enabled (CPU vmx/svm flag + `/dev/kvm`). Free container hosts can NEVER make nested VPS. Without KVM, `--emulate` boots in pure software emulation (10-20x slower, testing only).
+
+Tested end-to-end (stub QEMU/libvirt): create → list → stop → start → delete works on BOTH the libvirt path and the plain-QEMU path; oversize requests and bad names are refused with exact numbers. A live boot of a real Ubuntu cloud image still needs a real KVM host — first boot takes 1-3 min (cloud-init).
+
+Note: if apt was broken once, the scripts remember it in `/tmp/mr-apt-update-failed` and skip pointless installs — if you fixed apt, run `rm -f /tmp/mr-apt-updated /tmp/mr-apt-update-failed` and re-run.
+
 One file does everything: `mr-root.sh` (installer) and `mr-root-one.sh` (v3 one-paste version)
 
 ## One-line install
@@ -107,6 +152,8 @@ JTG repo: https://github.com/JishnuTheGamer/Jtg
 
 - `mr-root.sh` — the whole installer (single file, everything above)
 - `mr-root-one.sh` — v3 ADVANCE one-paste version: copy the whole file into a terminal, press Enter, get root. No download of itself, dash-safe, no setup by default (fast root — run `bash /root/.mr-setup.sh` inside for Node 20 + git + PM2)
+- `mr-vps-power.sh` — v1 VPS POWER: Docker / privileged / kernel / networking / systemd / KVM check + setup + honest report
+- `mr-nested-vps.sh` — v1 NESTED VPS: VPS-er vitore VPS banao (QEMU/KVM, libvirt + plain-QEMU paths, resource guard)
 - `README.md` — this file
 
 ## Credits
