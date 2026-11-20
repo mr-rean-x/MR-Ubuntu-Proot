@@ -1,10 +1,13 @@
 #!/bin/bash
 # ============================================================
-#  MR NESTED VPS v2.0.0 — VPS-er vitore VPS banao (QEMU/KVM)
+#  MR NESTED VPS v2.1.0 — VPS-er vitore VPS banao (QEMU/KVM)
 #  by MR REAN (mr-rean-x) | https://github.com/mr-rean-x/MR-Ubuntu-Proot
 #
 #  ONE COMMAND — MAKE a VPS (v2, main mode — 4ta proshno, KVM thakuk ar na thakuk):
 #    python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-nested-vps.sh','mr-nested-vps.sh');os.execv('/bin/bash',['bash','mr-nested-vps.sh','make'])"
+#
+#  SPLIT one VPS into many (v2.1 — give each part to others):
+#    python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-nested-vps.sh','mr-nested-vps.sh');os.execv('/bin/bash',['bash','mr-nested-vps.sh','split'])"
 #
 #  OR check first if this host CAN make nested VPS:
 #    bash mr-nested-vps.sh check
@@ -15,7 +18,7 @@
 #    # login: user mrrean / password mrrean  (change with --password)
 #
 #  COMMANDS:
-#    make | check | create <name> <ramMB> <diskGB> <cpus> [--emulate] [--password P] [--image URL]
+#    make | split | check | create <name> <ramMB> <diskGB> <cpus> [--emulate] [--password P] [--image URL]
 #    list | start <name> | stop <name> | delete <name> [--yes] | console <name> | help
 #
 #  HONEST LIMITS — please read:
@@ -36,7 +39,7 @@
 # POSIX-safe: works even when pasted into /bin/sh (dash), which has no pipefail.
 set -eu
 
-VERSION="2.0.0-MR-NESTED"
+VERSION="2.1.0-MR-NESTED"
 CMD="${1:-check}"
 # NOTE: plain `shift || true` kills dash (shift is a special builtin).
 if [ $# -gt 0 ]; then shift; fi
@@ -428,6 +431,115 @@ do_make() {
     fi
 }
 
+# ============================================================
+#  SPLIT (v2.1) — 1ta KVM VPS-ke onek vag kore onnoder dao.
+#  Example: 8GB host -> 4ta VPS (1536MB RAM, 10GB disk, 1 CPU each).
+#  Prottek-tar alada name / SSH port / password + ekta summary
+#  file (login cards) — oita copy kore onnoder dite parba.
+#  Non-interactive env: MR_SPLIT_COUNT / MR_SPLIT_RAM / MR_SPLIT_DISK /
+#  MR_SPLIT_CPUS / MR_SPLIT_PREFIX / MR_SPLIT_PASSMODE (1=shared, 2=random)
+#  MR_SPLIT_PASS (shared password) / MR_SPLIT_FORCE=yes (skip TCG warning)
+# ============================================================
+rand_pass() {
+    local _p=""
+    if [ -r /dev/urandom ] && command -v tr >/dev/null 2>&1 && command -v head >/dev/null 2>&1; then
+        _p="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 10)"
+    fi
+    [ -n "$_p" ] || _p="mrrean$$"
+    printf '%s' "$_p"
+}
+
+do_split() {
+    local COUNT="${MR_SPLIT_COUNT:-}" RAM="${MR_SPLIT_RAM:-}" DISK="${MR_SPLIT_DISK:-}" CPUS="${MR_SPLIT_CPUS:-}" PREFIX="${MR_SPLIT_PREFIX:-}" PASSMODE="${MR_SPLIT_PASSMODE:-}"
+    echo "============================================"
+    echo "       MR NESTED VPS — SPLIT INTO MANY"
+    echo "============================================"
+    if ! has_kvm_dev; then
+        warn "KVM NAI ei host-e! Split kora VPS TCG emulation-e cholbe (10-20x slow) — onnoder dewar moto hobe na."
+        if [ "${MR_SPLIT_FORCE:-}" != "yes" ]; then
+            printf 'Tobuo TCG-te split korba? Type YES to continue: '
+            read -r ans || true
+            [ "$ans" = "YES" ] || { echo "Cancelled — real KVM VPS-e chalao."; return 0; }
+        fi
+    fi
+    local ram_av disk_av cpus_n
+    ram_av="$(host_ram_avail_mb)"; disk_av="$(host_disk_avail_gb)"; cpus_n="$(host_cpus)"
+    printf '%b\n' "Host now: RAM free ${ram_av}MB | Disk free ${disk_av}GB | CPUs ${cpus_n}  (host keeps 512MB + 2GB)"
+    if [ -z "$COUNT" ]; then printf 'Koyta VPS banaba? (e.g. 4): '; read -r COUNT || true; fi
+    if [ -z "$RAM" ]; then printf 'Prottek-ta RAM MB (e.g. 1024): '; read -r RAM || true; fi
+    if [ -z "$DISK" ]; then printf 'Prottek-ta Disk GB (e.g. 10): '; read -r DISK || true; fi
+    if [ -z "$CPUS" ]; then printf 'Prottek-ta CPUs (e.g. 1): '; read -r CPUS || true; fi
+    if [ -z "$PREFIX" ]; then printf 'Name prefix (e.g. vps — hobe vps-1, vps-2...): '; read -r PREFIX || true; fi
+    if [ -z "$PASSMODE" ]; then printf 'Password: 1 = sobar ek (tumi diba), 2 = prottek-tar alada random: '; read -r PASSMODE || true; fi
+    case "$COUNT$RAM$DISK$CPUS" in *[!0-9]*|"") die "Count / RAM / disk / CPUs must be numbers." ;; esac
+    [ "$COUNT" -ge 1 ] 2>/dev/null || die "Count must be at least 1."
+    [ "$COUNT" -le 50 ] 2>/dev/null || die "Count max 50 (ekbare er beshi na)."
+    [ "$RAM" -ge 512 ] 2>/dev/null || die "RAM must be at least 512 MB each."
+    [ "$DISK" -ge 5 ] 2>/dev/null || die "Disk must be at least 5 GB each."
+    [ "$CPUS" -ge 1 ] 2>/dev/null || die "CPUs must be at least 1 each."
+    case "$PREFIX" in *[!A-Za-z0-9_-]*|"") die "Bad prefix '$PREFIX' — use letters, numbers, - and _ only." ;; esac
+    # --- total guard: sob VPS miliye host-er beshi dite parba na ---
+    local need_r need_d used_r used_d free_r free_d
+    used_r="$(used_ram_mb)"; used_d="$(used_disk_gb)"
+    free_r=$((ram_av - 512 - used_r)); free_d=$((disk_av - 2 - used_d))
+    need_r=$((COUNT * RAM)); need_d=$((COUNT * DISK))
+    printf '%b\n' "Total needed: RAM ${need_r}MB | Disk ${need_d}GB  (free for new VMs: RAM ${free_r}MB | Disk ${free_d}GB)"
+    [ "$need_r" -le "$free_r" ] || die "NOT ENOUGH RAM: ${COUNT}ta x ${RAM}MB = ${need_r}MB lagbe, kintu free ase ${free_r}MB. Kom VPS nao, ba kom RAM dao."
+    [ "$need_d" -le "$free_d" ] || die "NOT ENOUGH DISK: ${COUNT}ta x ${DISK}GB = ${need_d}GB lagbe, kintu free ase ${free_d}GB."
+    [ "$CPUS" -le "$cpus_n" ] || die "NOT ENOUGH CPUs: host-e ${cpus_n}ta CPU, tumi prottek-tay ${CPUS}ta chaila."
+    # --- shared password (mode 1) ---
+    local SHARED_PASS=""
+    if [ "$PASSMODE" = "1" ]; then
+        if [ -n "${MR_SPLIT_PASS:-}" ]; then SHARED_PASS="$MR_SPLIT_PASS";
+        else
+            printf 'Shared password (sobar jonno ek, min 4 chars): '
+            stty -echo 2>/dev/null || true
+            read -r SHARED_PASS || true
+            stty echo 2>/dev/null || true
+            echo
+            [ -n "$SHARED_PASS" ] || die "Password dite hobe (mode 1)."
+        fi
+    fi
+    # --- create all (ekta fail korle baki gulo cholbe) ---
+    local SUMMARY="$VM_DIR/split-$(date +%Y%m%d-%H%M%S).txt"
+    {
+        echo "MR NESTED VPS — SPLIT SUMMARY ($(date))"
+        echo "Host: $(hostname) | Total: ${COUNT} VPS | Each: ${RAM}MB RAM, ${DISK}GB disk, ${CPUS} CPU"
+        echo
+    } > "$SUMMARY"
+    local i=0 NAME="" PASS="" PORT="" IP="" MODE="" SSHLINE=""
+    while [ "$i" -lt "$COUNT" ]; do
+        i=$((i + 1))
+        NAME="${PREFIX}-${i}"
+        if [ "$PASSMODE" = "1" ]; then PASS="$SHARED_PASS"; else PASS="$(rand_pass)"; fi
+        if [ -d "$VM_DIR/$NAME" ]; then
+            warn "VM '$NAME' age theke ase — skip korlam."
+            continue
+        fi
+        info "Banacchi $i/$COUNT: $NAME ..."
+        if has_kvm_dev; then
+            ( do_create "$NAME" "$RAM" "$DISK" "$CPUS" --password "$PASS" ) || { warn "FAILED: $NAME — baki gulo cholbe."; continue; }
+        else
+            ( do_create "$NAME" "$RAM" "$DISK" "$CPUS" --emulate --password "$PASS" ) || { warn "FAILED: $NAME — baki gulo cholbe."; continue; }
+        fi
+        PORT="$(grep -E '^PORT=' "$VM_DIR/$NAME/vm.conf" | cut -d= -f2)"
+        IP="$(grep -E '^IP=' "$VM_DIR/$NAME/vm.conf" | cut -d= -f2)"
+        MODE="$(grep -E '^MODE=' "$VM_DIR/$NAME/vm.conf" | cut -d= -f2)"
+        if [ "$MODE" = "libvirt" ]; then SSHLINE="ssh mrrean@$IP"; else SSHLINE="ssh mrrean@127.0.0.1 -p $PORT"; fi
+        {
+            echo "$NAME | RAM ${RAM}MB | Disk ${DISK}GB | CPU ${CPUS} | SSH: $SSHLINE | user: mrrean | pass: $PASS"
+        } >> "$SUMMARY"
+    done
+    echo
+    echo "============================================"
+    echo "       SPLIT DONE — LOGIN CARDS"
+    echo "============================================"
+    cat "$SUMMARY"
+    echo
+    echo "Summary file: $SUMMARY  (password soho — kauke dewar age bujhe dao)"
+    echo "Manage: bash mr-nested-vps.sh list | stop <name> | delete <name>"
+}
+
 # ---------- manage ----------
 vm_conf() { [ -f "$VM_DIR/$1/vm.conf" ] || die "No VM named '$1'. List: bash mr-nested-vps.sh list"; }
 do_list() {
@@ -506,6 +618,7 @@ show_help() {
     echo "Usage: bash mr-nested-vps.sh <command> [options]"
     echo
     echo "  make                           v2: 4ta proshno diye VPS banao (KVM thakuk ar na thakuk)"
+    echo "  split                          v2.1: 1ta VPS-ke onek vag koro (onnoder dewar jonno)"
     echo "  check                          Can this host make nested VPS?"
     echo "  create <name> <ramMB> <diskGB> <cpus> [--emulate] [--password P] [--image URL]"
     echo "                                 Make a nested VPS (Ubuntu 22.04)"
@@ -517,6 +630,7 @@ show_help() {
     echo
     echo "Examples:"
     echo "  bash mr-nested-vps.sh make"
+    echo "  bash mr-nested-vps.sh split"
     echo "  bash mr-nested-vps.sh check"
     echo "  bash mr-nested-vps.sh create myvps1 2048 20 2"
     echo "  bash mr-nested-vps.sh create small 1024 10 1 --password mysecret123"
@@ -527,6 +641,7 @@ show_help() {
 
 case "$CMD" in
     make)    do_make "$@" ;;
+    split)   do_split "$@" ;;
     check)   do_check ;;
     create)  [ $# -ge 4 ] || { error "Usage: bash mr-nested-vps.sh create <name> <ramMB> <diskGB> <cpus>"; exit 1; }; do_create "$@" ;;
     list)    do_list ;;
