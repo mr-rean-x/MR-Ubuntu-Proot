@@ -1,10 +1,13 @@
 #!/bin/bash
 # ============================================================
-#  MR NESTED VPS v1.0.0 — VPS-er vitore VPS banao (QEMU/KVM)
+#  MR NESTED VPS v2.0.0 — VPS-er vitore VPS banao (QEMU/KVM)
 #  by MR REAN (mr-rean-x) | https://github.com/mr-rean-x/MR-Ubuntu-Proot
 #
-#  ONE COMMAND — check if this host CAN make nested VPS:
-#    python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-nested-vps.sh','mr-nested-vps.sh');os.execv('/bin/bash',['bash','mr-nested-vps.sh','check'])"
+#  ONE COMMAND — MAKE a VPS (v2, main mode — 4ta proshno, KVM thakuk ar na thakuk):
+#    python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-nested-vps.sh','mr-nested-vps.sh');os.execv('/bin/bash',['bash','mr-nested-vps.sh','make'])"
+#
+#  OR check first if this host CAN make nested VPS:
+#    bash mr-nested-vps.sh check
 #
 #  CREATE a nested VPS (Ubuntu 22.04 cloud image):
 #    bash mr-nested-vps.sh create myvps1 2048 20 2
@@ -12,7 +15,7 @@
 #    # login: user mrrean / password mrrean  (change with --password)
 #
 #  COMMANDS:
-#    check | create <name> <ramMB> <diskGB> <cpus> [--emulate] [--password P] [--image URL]
+#    make | check | create <name> <ramMB> <diskGB> <cpus> [--emulate] [--password P] [--image URL]
 #    list | start <name> | stop <name> | delete <name> [--yes] | console <name> | help
 #
 #  HONEST LIMITS — please read:
@@ -20,20 +23,20 @@
 #      real RAM/disk/CPU. Host-e 6GB RAM thakle sob nested VPS miliye
 #      6GB-er beshi dite parba na — script-ta hiseb kore na dile
 #      refuse korbe (exact number soho).
-#    - Nested VPS needs a REAL KVM VPS with nested virt enabled
-#      (CPU vmx/svm flag + /dev/kvm). Free container hosts (Render /
-#      Jupyter / Altare sandbox) can NEVER make nested VPS — no KVM,
-#      no kernel access. `check` will tell you in 5 seconds.
-#    - Without KVM, --emulate runs pure software emulation (TCG) —
-#      10-20x slower, only for testing, not for real use.
-#    - No exploits: only legitimate host-provided virtualization.
+#    - KVM thakle FAST (real virtualization). KVM NA thakle MAKE
+#      auto TCG emulation use kore — VPS banano JABE, kintu 10-20x
+#      slow, boot-e 10+ min lagte pare, real use-er jonno na.
+#      Free container hosts (Render / Jupyter / Altare sandbox)-eo
+#      TCG-e VPS banano jay — slow, testing only.
+#    - No exploits: only legitimate host-provided virtualization
+#      (KVM) or pure software emulation (TCG).
 #
 #  POSIX-safe: works pasted into /bin/sh (dash) too.
 # ============================================================
 # POSIX-safe: works even when pasted into /bin/sh (dash), which has no pipefail.
 set -eu
 
-VERSION="1.0.0-MR-NESTED"
+VERSION="2.0.0-MR-NESTED"
 CMD="${1:-check}"
 # NOTE: plain `shift || true` kills dash (shift is a special builtin).
 if [ $# -gt 0 ]; then shift; fi
@@ -390,6 +393,41 @@ EOF
     echo "  First boot takes 1-3 min (cloud-init) — if SSH refuses, wait and retry."
 }
 
+# ============================================================
+#  MAKE (v2) — KVM thakuk ar na thakuk, 4ta proshno diye VPS banao.
+#  No KVM -> TCG emulation (slow, 10-20x) + slirp networking.
+#  Non-interactive: MR_VM_NAME / MR_VM_RAM / MR_VM_DISK / MR_VM_CPUS / MR_VM_PASS
+# ============================================================
+do_make() {
+    local NAME="${MR_VM_NAME:-}" RAM="${MR_VM_RAM:-}" DISK="${MR_VM_DISK:-}" CPUS="${MR_VM_CPUS:-}" PASSWORD="${MR_VM_PASS:-}"
+    echo "============================================"
+    echo "       MR NESTED VPS — MAKE A VPS"
+    echo "============================================"
+    if has_kvm_dev; then
+        ok "KVM ase — fast mode (real KVM)."
+    else
+        warn "KVM NAI ei host-e — TCG emulation-e banano hobe (10-20x slow, boot-e 10+ min lagte pare)."
+        echo "  Jodi real KVM chao: provider panel-e nested virt on koro, ba real KVM VPS naw."
+    fi
+    if [ -z "$NAME" ]; then printf 'VM name (letters/numbers/-/_): '; read -r NAME || true; fi
+    if [ -z "$RAM" ]; then printf 'RAM MB (min 512, e.g. 2048): '; read -r RAM || true; fi
+    if [ -z "$DISK" ]; then printf 'Disk GB (min 5, e.g. 20): '; read -r DISK || true; fi
+    if [ -z "$CPUS" ]; then printf 'CPUs (e.g. 2): '; read -r CPUS || true; fi
+    if [ -z "$PASSWORD" ]; then
+        printf 'Password for user mrrean (min 4 chars, blank = mrrean): '
+        stty -echo 2>/dev/null || true
+        read -r PASSWORD || true
+        stty echo 2>/dev/null || true
+        echo
+        [ -z "$PASSWORD" ] && PASSWORD="mrrean"
+    fi
+    if has_kvm_dev; then
+        do_create "$NAME" "$RAM" "$DISK" "$CPUS" --password "$PASSWORD"
+    else
+        do_create "$NAME" "$RAM" "$DISK" "$CPUS" --emulate --password "$PASSWORD"
+    fi
+}
+
 # ---------- manage ----------
 vm_conf() { [ -f "$VM_DIR/$1/vm.conf" ] || die "No VM named '$1'. List: bash mr-nested-vps.sh list"; }
 do_list() {
@@ -409,7 +447,8 @@ do_list() {
         else st="shut off"; fi
         printf '  %-15s %-8s RAM %sMB Disk %sGB CPU %s  [%s]\n' "$n" "$m" "$r" "$d" "$c" "$st"
     done
-    [ "$found" = "0" ] && echo "  (none yet — create one: bash mr-nested-vps.sh create myvps1 2048 20 2)"
+    if [ "$found" = "0" ]; then echo "  (none yet — create one: bash mr-nested-vps.sh make)"; fi
+    return 0
 }
 do_start() {
     vm_conf "$1"
@@ -466,6 +505,7 @@ show_help() {
     echo "MR NESTED VPS v$VERSION — VPS-er vitore VPS"
     echo "Usage: bash mr-nested-vps.sh <command> [options]"
     echo
+    echo "  make                           v2: 4ta proshno diye VPS banao (KVM thakuk ar na thakuk)"
     echo "  check                          Can this host make nested VPS?"
     echo "  create <name> <ramMB> <diskGB> <cpus> [--emulate] [--password P] [--image URL]"
     echo "                                 Make a nested VPS (Ubuntu 22.04)"
@@ -476,6 +516,7 @@ show_help() {
     echo "  help                           This help"
     echo
     echo "Examples:"
+    echo "  bash mr-nested-vps.sh make"
     echo "  bash mr-nested-vps.sh check"
     echo "  bash mr-nested-vps.sh create myvps1 2048 20 2"
     echo "  bash mr-nested-vps.sh create small 1024 10 1 --password mysecret123"
@@ -485,6 +526,7 @@ show_help() {
 }
 
 case "$CMD" in
+    make)    do_make "$@" ;;
     check)   do_check ;;
     create)  [ $# -ge 4 ] || { error "Usage: bash mr-nested-vps.sh create <name> <ramMB> <diskGB> <cpus>"; exit 1; }; do_create "$@" ;;
     list)    do_list ;;

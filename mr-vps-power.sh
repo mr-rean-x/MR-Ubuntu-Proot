@@ -1,36 +1,45 @@
 #!/bin/bash
 # ============================================================
-#  MR VPS POWER v1.0.0 — Docker / Privileged / Kernel /
-#  Networking / Systemd / KVM — check + setup in ONE command
+#  MR VPS POWER v2.0.0 — Docker / Privileged / Kernel /
+#  Networking / Systemd / KVM — check + setup + POWERUP in ONE command
 #  by MR REAN (mr-rean-x) | https://github.com/mr-rean-x/MR-Ubuntu-Proot
 #
-#  ONE COMMAND (paste this, get the full report + setup):
-#    python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-vps-power.sh','mr-vps-power.sh');os.execv('/bin/bash',['bash','mr-vps-power.sh','install'])"
+#  ONE COMMAND — POWERUP (v2, main mode):
+#    python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-vps-power.sh','mr-vps-power.sh');os.execv('/bin/bash',['bash','mr-vps-power.sh','powerup'])"
+#
+#  POWERUP mane: ja support kore na, tar USERSPACE bodli bosano —
+#  MR ROOT jemon proot diye root FAKE kore, temon:
+#    Docker      -> rootless Podman (docker command-er motoi kaj)
+#    Privileged  -> proot + fakeroot (fake root)
+#    KVM         -> QEMU TCG emulation (slow, 10-20x, kintu VM chole)
+#    Systemd     -> systemd --user, na hole supervisord
+#    Network     -> slirp4netns (rootless container network)
 #
 #  OR check only (nothing installed, safe anywhere):
 #    bash mr-vps-power.sh check
 #
 #  HONEST LIMITS — read this before you run it:
-#    - Privileged / Kernel / KVM are decided by the HOST (the provider),
-#      not by any command inside. If the host did not give your VPS
-#      CAP_SYS_ADMIN, /dev/kvm or module loading, NO script can create
-#      them from inside — that would be breaking out of the container,
-#      and this script does NOT do exploits. It installs everything
-#      that IS possible and tells you plainly what is blocked and why.
+#    - Asol Docker daemon / asol KVM / asol kernel module / asol
+#      PID 1 systemd HOST-er permission chara kokhono hobe na.
+#      Kono script vitore theke egula banate pare na — seta
+#      container theke ber hoye jawa hoto, ar ei script kono
+#      exploit kore na. Report-e 3ta vag thake:
+#      REAL = asol feature | BODLI = userspace bodli (90% kaj hoy)
+#      HOBE NA = host-er permission chara kokhono na.
 #    - On a REAL root VPS (KVM VPS with root): Docker + systemd +
 #      networking + KVM all set up by this one script.
 #    - On free container hosts (Render / Jupyter / Altare sandbox):
 #      Docker daemon, systemd-as-PID-1 and KVM stay BLOCKED by the
-#      host. What you CAN get there: rootless Podman (if user
-#      namespaces are on), networking tools, and a true report.
+#      host. POWERUP bosay: rootless Podman (userns on thakle),
+#      fakeroot, QEMU TCG, systemd --user/supervisord, slirp.
 #
-#  COMMANDS: check | install (default) | docker | kvm | network | systemd | kernel | help
+#  COMMANDS: check | install (default) | powerup | docker | kvm | network | systemd | kernel | help
 #  POSIX-safe: works pasted into /bin/sh (dash) too. No exploits, ever.
 # ============================================================
 # POSIX-safe: works even when pasted into /bin/sh (dash), which has no pipefail.
 set -eu
 
-VERSION="1.0.0-MR-POWER"
+VERSION="2.0.0-MR-POWER"
 CMD="${1:-install}"
 # NOTE: plain `shift || true` kills dash (shift is a special builtin).
 if [ $# -gt 0 ]; then shift; fi
@@ -320,6 +329,198 @@ check_systemd() {
     fi
 }
 
+# ============================================================
+#  POWERUP MODE (v2) — MR ROOT-er moto: ja support kore na,
+#  tar USERSPACE bodli bosao. Asol Docker/KVM/PID1-systemd
+#  host-er permission chara kokhono hobe na — bodli gulo diye
+#  90% kaj hoy. Report-e REAL / BODLI / HOBE NA alada kore.
+# ============================================================
+P_DOCKER="?"; P_PRIV="?"; P_QEMU="?"; P_SYS="?"; P_NET="?"
+
+check_userns() {
+    if command -v unshare >/dev/null 2>&1 && unshare --user --map-root-user id >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+ensure_subuid() {
+    local _u="${SUDO_USER:-$(id -un)}"
+    [ -n "$_u" ] || return 1
+    id "$_u" >/dev/null 2>&1 || return 1
+    if [ "$IS_ROOT" = "0" ] && [ -z "$SUDO" ]; then
+        warn "subuid/subgid entry dite root lagbe (ekbar) — na thakle rootless Podman-e map error ashte pare."
+        return 1
+    fi
+    if ! grep -q "^${_u}:" /etc/subuid 2>/dev/null; then
+        printf '%s:100000:65536\n' "$_u" | $SUDO tee -a /etc/subuid >/dev/null 2>&1 && ok "subuid entry added for $_u." || warn "Could not write /etc/subuid."
+    fi
+    if ! grep -q "^${_u}:" /etc/subgid 2>/dev/null; then
+        printf '%s:100000:65536\n' "$_u" | $SUDO tee -a /etc/subgid >/dev/null 2>&1 && ok "subgid entry added for $_u." || warn "Could not write /etc/subgid."
+    fi
+    return 0
+}
+
+powerup_docker() {
+    info "POWERUP: Docker (rootless Podman)..."
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        P_DOCKER="REAL"; R_DOCKER="OK"; NOTE_DOCKER="Docker daemon already running."
+        ok "Docker already REAL — nothing to do."
+        return 0
+    fi
+    if ! check_userns; then
+        P_DOCKER="HOBE NA"; NOTE_DOCKER="User namespace OFF on this host — rootless Podman-o cholbe na. Host-e userns on korte hobe (provider panel / kernel)."
+        warn "Docker: $NOTE_DOCKER"
+        return 0
+    fi
+    ensure_subuid || true
+    apt_install podman crun fuse-overlayfs slirp4netns uidmap || warn "Podman install failed — check /tmp/mr-apt.log."
+    apt_install podman-docker || true
+    if command -v podman >/dev/null 2>&1; then
+        podman system migrate >/dev/null 2>&1 || true
+        if with_timeout 180 podman run --rm docker.io/library/alpine echo MR-POWER-OK >/tmp/podman-powerup.log 2>&1; then
+            P_DOCKER="BODLI"; R_DOCKER="HALF"
+            NOTE_DOCKER="Rootless Podman WORKS — 'podman' diye docker-er kaj hobe."
+            ok "Podman test: alpine container cholse."
+            if command -v docker >/dev/null 2>&1; then
+                NOTE_DOCKER="$NOTE_DOCKER 'docker' command-o kaj kore (podman-docker shim)."
+            else
+                if ! grep -q "alias docker=podman" ~/.bashrc 2>/dev/null; then
+                    printf '\n# MR VPS POWER: docker -> podman (rootless)\nalias docker=podman\n' >> ~/.bashrc 2>/dev/null || true
+                fi
+                NOTE_DOCKER="$NOTE_DOCKER ~/.bashrc-te 'alias docker=podman' add kora hoise — notun shell-e 'docker' likhlei podman cholbe."
+            fi
+            return 0
+        fi
+        warn "Podman install hoise kintu test container cholse na — log: /tmp/podman-powerup.log"
+    fi
+    P_DOCKER="HOBE NA"; NOTE_DOCKER="Podman install/test fail — apt log dekho: /tmp/mr-apt.log"
+}
+
+powerup_fakeroot() {
+    info "POWERUP: fake root (proot + fakeroot)..."
+    apt_install proot fakeroot || warn "proot/fakeroot install failed."
+    local _f=0
+    if command -v fakeroot >/dev/null 2>&1 && [ "$(fakeroot id -u 2>/dev/null)" = "0" ]; then _f=1; fi
+    if command -v proot >/dev/null 2>&1 && [ "$(proot -0 id -u 2>/dev/null)" = "0" ]; then _f=1; fi
+    if [ "$_f" = "1" ]; then
+        P_PRIV="BODLI"; R_PRIV="HALF"; NOTE_PRIV="Fake root WORKS (fakeroot/proot) — MR ROOT-er moto, vitore root mone hobe, kintu asol host root na."
+        ok "Fake root works."
+    else
+        P_PRIV="HOBE NA"; NOTE_PRIV="proot/fakeroot install ba test fail."
+        warn "Fake root: $NOTE_PRIV"
+    fi
+}
+
+powerup_qemu() {
+    info "POWERUP: QEMU (KVM-er bodli — TCG emulation)..."
+    if [ -e /dev/kvm ]; then
+        P_QEMU="REAL"; ok "Real KVM already here (/dev/kvm) — emulation lagbe na."
+        return 0
+    fi
+    apt_install qemu-system-x86 qemu-utils || warn "QEMU install failed."
+    if command -v qemu-system-x86_64 >/dev/null 2>&1; then
+        P_QEMU="BODLI"
+        ok "QEMU installed: $(qemu-system-x86_64 --version 2>/dev/null | head -1) — TCG emulation-e VM cholbe (10-20x slow)."
+    else
+        P_QEMU="HOBE NA"
+        warn "QEMU install fail — VM banano jabe na ei host-e."
+    fi
+}
+
+powerup_systemd_user() {
+    info "POWERUP: service manager (systemd --user / supervisord)..."
+    if [ "$(cat /proc/1/comm 2>/dev/null)" = "systemd" ]; then
+        P_SYS="REAL"; R_SYSTEMD="OK"; NOTE_SYSTEMD="systemd already PID 1."
+        ok "systemd already REAL."
+        return 0
+    fi
+    if command -v loginctl >/dev/null 2>&1; then
+        loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
+    fi
+    mkdir -p ~/.config/systemd/user 2>/dev/null || true
+    if systemctl --user daemon-reload >/dev/null 2>&1; then
+        P_SYS="BODLI"; R_SYSTEMD="HALF"; NOTE_SYSTEMD="systemd --user WORKS — user service diye bot/app auto-start kora jabe (PID 1 systemd na, kintu service cholbe)."
+        ok "systemd --user works."
+        return 0
+    fi
+    apt_install supervisor || warn "supervisor install failed."
+    if command -v supervisord >/dev/null 2>&1; then
+        if [ ! -f ~/supervisord.conf ]; then
+            cat > ~/supervisord.conf <<'EOF'
+[supervisord]
+logfile=/tmp/supervisord.log
+pidfile=/tmp/supervisord.pid
+nodaemon=false
+[program:mr-sample]
+command=/bin/sleep 3600
+autostart=false
+autorestart=false
+EOF
+        fi
+        if supervisorctl -c ~/supervisord.conf status >/dev/null 2>&1; then
+            P_SYS="BODLI"; R_SYSTEMD="HALF"; NOTE_SYSTEMD="supervisord already running (~/supervisord.conf) — use: supervisorctl -c ~/supervisord.conf status"
+            ok "supervisord already running."
+            return 0
+        fi
+        supervisord -c ~/supervisord.conf >/dev/null 2>&1 || true
+        sleep 2
+        if supervisorctl -c ~/supervisord.conf status >/dev/null 2>&1; then
+            P_SYS="BODLI"; R_SYSTEMD="HALF"; NOTE_SYSTEMD="supervisord WORKS (~/supervisord.conf) — service manager hishebe use koro: supervisorctl -c ~/supervisord.conf status"
+            ok "supervisord works."
+            return 0
+        fi
+    fi
+    P_SYS="HOBE NA"; NOTE_SYSTEMD="systemd --user-o na, supervisord-o na — service auto-start ei host-e somvob na."
+    warn "Service manager: $NOTE_SYSTEMD"
+}
+
+powerup_network() {
+    info "POWERUP: network (slirp4netns)..."
+    if ! command -v slirp4netns >/dev/null 2>&1; then
+        apt_install slirp4netns || true
+    fi
+    if command -v slirp4netns >/dev/null 2>&1; then
+        P_NET="BODLI"; R_NET="HALF"; NOTE_NET="slirp4netns $(slirp4netns --version 2>/dev/null | head -1) — rootless container-e outbound network cholbe."
+        ok "slirp4netns ready."
+    else
+        P_NET="HOBE NA"; NOTE_NET="slirp4netns install fail — rootless container-er network nao cholte pare."
+        warn "Network: $NOTE_NET"
+    fi
+}
+
+report_powerup() {
+    echo
+    echo "============================================"
+    echo "       MR VPS POWER v2 — POWERUP REPORT"
+    echo "       REAL = asol | BODLI = userspace bodli"
+    echo "       HOBE NA = host-er permission chara kokhono na"
+    echo "============================================"
+    printf '%-11s %s\n' "Docker:"     "$P_DOCKER — $NOTE_DOCKER"
+    printf '%-11s %s\n' "Fake root:"  "$P_PRIV — $NOTE_PRIV"
+    printf '%-11s %s\n' "QEMU/VM:"   "$P_QEMU — KVM na thakle TCG emulation-e VM banano jabe (mr-nested-vps.sh make)"
+    printf '%-11s %s\n' "Service:"    "$P_SYS — $NOTE_SYSTEMD"
+    printf '%-11s %s\n' "Network:"    "$P_NET — $NOTE_NET"
+    echo
+    echo "Asol Docker daemon / asol KVM / asol PID 1 systemd pete hole"
+    echo "real KVM VPS lagbe (root + nested virt on). Bodli diye 90% kaj hoy."
+}
+
+do_powerup() {
+    echo "============================================"
+    echo "       MR VPS POWER v$VERSION — POWERUP MODE"
+    echo "  Ja support kore na, tar bodli bosano hocche"
+    echo "============================================"
+    check_privileged
+    powerup_docker
+    powerup_fakeroot
+    powerup_qemu
+    powerup_systemd_user
+    powerup_network
+    check_kvm
+    report_powerup
+}
+
 # ---------- final report ----------
 report() {
     echo
@@ -348,6 +549,7 @@ show_help() {
     echo
     echo "  check      Report only — install nothing (safe anywhere)"
     echo "  install    Check + install everything possible (default)"
+    echo "  powerup    v2: install USERSPACE alternatives (Podman=Docker, fakeroot, QEMU TCG, systemd --user, slirp)"
     echo "  docker     Docker only (install + start + Podman fallback)"
     echo "  kvm        KVM only (check + try loading kvm module)"
     echo "  network    Networking only (tools + forwarding + iptables test)"
@@ -382,6 +584,7 @@ do_install() {
 case "$CMD" in
     check)   do_check ;;
     install) do_install ;;
+    powerup) do_powerup ;;
     docker)  check_privileged; install_docker; report ;;
     kvm)     check_privileged; check_kernel; check_kvm; report ;;
     network) check_privileged; install_network; report ;;
