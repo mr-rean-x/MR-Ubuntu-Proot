@@ -13,13 +13,15 @@
 #
 #  MENU:  1) Full Setup (Panel + Node)  2) Panel only  3) Node only
 #         4) Check status              5) Exit
-#  DIRECT: bash mr-panel-setup.sh full|panel|node|status|tunnel [--dry-run]
+#  DIRECT: bash mr-panel-setup.sh full|panel|node|status|tunnel|node-token [--dry-run]
 #  TUNNEL (v1.1): bash mr-panel-setup.sh tunnel — installs cloudflared,
 #    runs YOUR Cloudflare tunnel (token typed in the terminal, hidden,
 #    never in chat/repo) as a systemd service + sets panel APP_URL to
 #    the tunnel domain. Token lives only in the unit file on your VPS.
 #  ROUTES (v1.1): panel.<domain> -> localhost:80, node.<domain> -> localhost:8080 —
 #    dashboard-e tunnel-er Public Hostnames-e add koro (script nije check kore).
+#  NODE-TOKEN (v1.2): panel-e nije node banale (node1) — bash mr-panel-setup.sh node-token
+#    script nijei token chaibe (hidden), config.yml-e bosabe, Wings restart kore green korbe.
 #  NODE DOMAIN (v1.1): node FQDN is node.<panel-domain> by default
 #    (override: MR_NODE_DOMAIN). Point node.<domain> DNS to the node
 #    server (A record) or add it as a tunnel Public Hostname (:8080).
@@ -55,7 +57,7 @@
 # POSIX-safe: works even when pasted into /bin/sh (dash), which has no pipefail.
 set -eu
 
-VERSION="1.1.0-MR-PANAL"
+VERSION="1.2.0-MR-PANAL"
 PANEL_VERSION="v1.15.2"
 WINGS_VERSION="v1.13.5"
 PHP_VER="8.3"
@@ -66,7 +68,7 @@ DRY_RUN=0
 MODE=""
 for _a in "$@"; do
     case "$_a" in
-        full|panel|node|status|tunnel|help|--help|-h) MODE="$_a" ;;
+        full|panel|node|status|tunnel|node-token|help|--help|-h) MODE="$_a" ;;
         --dry-run) DRY_RUN=1 ;;
         *) printf 'Unknown argument: %s\n' "$_a" >&2; exit 1 ;;
     esac
@@ -798,6 +800,80 @@ do_full() {
     if [ "$SCHEME" = "http" ]; then echo "  NOTE: HTTP only — point $DOMAIN DNS to this server, then run: certbot --nginx -d $DOMAIN"; fi
 }
 
+# ---------- node-token: panel-e nije node banale, token diye Wings green koro ----------
+do_node_token() {
+    check_prereqs
+    panel_installed || die "No panel found at $PANEL_DIR — install the panel first (menu option 1 or 2)."
+    local node_id="${MR_NODE_ID:-}" node_token="${MR_NODE_TOKEN:-}"
+    local cli db_name db_user db_pass row
+    local node_uuid node_token_id node_fqdn node_scheme node_port node_sftp panel_url code
+    [ -n "$node_id" ] || { ask node_id "Node id (node1 = 1)" "1"; }
+    case "$node_id" in *[!0-9]*|'') die "Node id number hote hobe (node1 = 1)." ;; esac
+    if [ -z "$node_token" ]; then
+        ask_secret node_token "Node token (panel > Nodes > node1 > Configuration tab theke copy koro)"
+    fi
+    [ -n "$node_token" ] || die "Token dao nai — panel-er Configuration tab theke token copy kore abar chalao."
+    if [ "$DRY_RUN" = "1" ]; then
+        printf '%b\n' "${YELLOW}[dry-run]${NC} mariadb: SELECT uuid, daemon_token_id, fqdn, scheme, daemonListeningPort, daemonSFTPPort FROM nodes WHERE id=$node_id"
+        printf '%b\n' "${YELLOW}[dry-run]${NC} write /etc/pterodactyl/config.yml (uuid + token_id + TOKEN + remote) + systemctl restart wings"
+        return 0
+    fi
+    cli="$(db_cli)"
+    [ -n "$cli" ] || die "MariaDB client not found."
+    db_name="$(env_get DB_DATABASE)"; db_user="$(env_get DB_USERNAME)"; db_pass="$(env_get DB_PASSWORD)"
+    [ -n "$db_name" ] || db_name="panel"
+    [ -n "$db_user" ] || db_user="pterodactyl"
+    row="$("$cli" -u "$db_user" "-p$db_pass" -N -e "SELECT uuid, daemon_token_id, fqdn, scheme, daemonListeningPort, daemonSFTPPort FROM $db_name.nodes WHERE id=$node_id;" 2>/dev/null || echo "")"
+    [ -n "$row" ] || die "Node id $node_id panel-e paoa jay nai — panel-e Admin -> Nodes-e id check koro."
+    node_uuid="$(printf '%s' "$row" | cut -f1)"
+    node_token_id="$(printf '%s' "$row" | cut -f2)"
+    node_fqdn="$(printf '%s' "$row" | cut -f3)"
+    node_scheme="$(printf '%s' "$row" | cut -f4)"
+    node_port="$(printf '%s' "$row" | cut -f5)"
+    node_sftp="$(printf '%s' "$row" | cut -f6)"
+    [ -n "$node_uuid" ] && [ -n "$node_token_id" ] || die "Node-er uuid/token_id paoa jay nai."
+    [ -n "$node_port" ] || node_port=8080
+    [ -n "$node_sftp" ] || node_sftp=2022
+    panel_url="$(env_get APP_URL)"
+    [ -n "$panel_url" ] || panel_url="http://localhost"
+    if [ "$node_scheme" = "https" ]; then
+        "$cli" -u "$db_user" "-p$db_pass" -e "UPDATE $db_name.nodes SET scheme='http' WHERE id=$node_id;" 2>/dev/null || true
+        info "Node scheme http kora holo (Wings SSL off — tunnel-e http-e cholbe)."
+    fi
+    run mkdir -p /etc/pterodactyl
+    {
+        printf 'debug: false\n'
+        printf 'uuid: %s\n' "$node_uuid"
+        printf 'token_id: %s\n' "$node_token_id"
+        printf 'token: %s\n' "$node_token"
+        printf 'api:\n  host: 0.0.0.0\n  port: %s\n  ssl:\n    enabled: false\n    cert: /etc/pterodactyl/certs/server.crt\n    key: /etc/pterodactyl/certs/server.key\n  upload_limit: 100\n' "$node_port"
+        printf 'system:\n  data: /var/lib/pterodactyl/volumes\n  sftp:\n    bind_port: %s\n' "$node_sftp"
+        printf 'remote: %s\n' "$panel_url"
+    } > /etc/pterodactyl/config.yml
+    chmod 600 /etc/pterodactyl/config.yml
+    ok "Wings config lekha holo: /etc/pterodactyl/config.yml (node $node_id, $node_fqdn)"
+    if [ -f /etc/systemd/system/wings.service ]; then
+        systemctl daemon-reload
+        systemctl restart wings || systemctl enable --now wings || die "Wings start hoy nai — check: systemctl status wings"
+        sleep 3
+        if systemctl is-active --quiet wings; then ok "Wings RUNNING."; else warn "Wings service active na — check: systemctl status wings"; fi
+    else
+        die "Wings install hoy nai — age 'full' ba 'node' chalao, tarpor 'node-token' chalao."
+    fi
+    code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://$node_fqdn:$node_port" 2>/dev/null || echo 000)"
+    case "$code" in
+        200|301|302|404) ok "Node route LIVE: http://$node_fqdn:$node_port (HTTP $code)" ;;
+        *) warn "Node-e ekhono connect hocche na (HTTP $code) — tunnel route (node -> localhost:$node_port) + Wings check koro." ;;
+    esac
+    node_token=""
+    echo
+    echo "============================================"
+    echo "       MR PANAL — NODE-TOKEN READY"
+    echo "============================================"
+    echo "  Node: node1 (id $node_id) on $node_fqdn"
+    echo "  Panel-e refresh dao: Admin -> Nodes -> node1 green hobe."
+}
+
 show_help() {
     show_banner
     echo
@@ -809,12 +885,13 @@ show_help() {
     echo "  node          Node (Wings) only — panel must already exist here"
     echo "  status        Check panel + Wings status"
     echo "  tunnel        Cloudflare Tunnel — install cloudflared + run your tunnel + set panel URL"
+    echo "  node-token    Panel-e nije node banale — script nijei token chaibe, config.yml-e bosabe, Wings restart korbe"
     echo "  help          This help"
     echo "  --dry-run     Print every step, install nothing"
     echo
     echo "The installer asks only: domain, admin username, admin password,"
     echo "admin email. Node size is automatic (host total minus reserve)."
-    echo "Env overrides: MR_DOMAIN MR_ADMIN_USER MR_ADMIN_PASS MR_ADMIN_EMAIL MR_NODE_DOMAIN MR_TUNNEL_TOKEN MR_TUNNEL_DOMAIN"
+    echo "Env overrides: MR_DOMAIN MR_ADMIN_USER MR_ADMIN_PASS MR_ADMIN_EMAIL MR_NODE_DOMAIN MR_TUNNEL_TOKEN MR_TUNNEL_DOMAIN MR_NODE_ID MR_NODE_TOKEN"
 }
 
 # ---------- main ----------
@@ -839,6 +916,7 @@ case "$MODE" in
     node)   do_node ;;
     status) do_status ;;
     tunnel) do_tunnel ;;
+    node-token) do_node_token ;;
     help|--help|-h) show_help ;;
     *) error "Unknown command: $MODE"; show_help; exit 1 ;;
 esac
