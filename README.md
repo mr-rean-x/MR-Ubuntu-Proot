@@ -59,6 +59,26 @@ Tested end-to-end (stub QEMU/libvirt): create → list → stop → start → de
 
 Note: if apt was broken once, the scripts remember it in `/tmp/mr-apt-update-failed` and skip pointless installs — if you fixed apt, run `rm -f /tmp/mr-apt-updated /tmp/mr-apt-update-failed` and re-run.
 
+## 🔴 MR PANAL SETUP — Auto Pterodactyl Panel + Node (1 command)
+
+ONE command — paste it, answer 4 questions, done. Menu upre lal **MR PANAL SETUP** lekha thakbe:
+
+```bash
+python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-panel-setup.sh','mr-panel-setup.sh');os.execv('/bin/bash',['bash','mr-panel-setup.sh'])"
+```
+
+It asks ONLY: **domain, admin username, admin password, admin email (gmail)**. Then it installs everything by itself:
+
+- **Panel v1.15.2** — PHP 8.3 + MariaDB + Redis + Nginx + queue worker + cron + HTTPS (Certbot)
+- **Node (Wings v1.13.5 + Docker)** — node auto-created (`p:node:make`), config auto-written (`p:node:configuration`), 11 allocations (ports 25565–25575) auto-added
+
+Menu: `1) Full Setup (Panel + Node)` · `2) Panel only` · `3) Node only` · `4) Check status` · `5) Exit`
+Direct: `bash mr-panel-setup.sh full|panel|node|status [--dry-run]` — `--dry-run` prints every step, installs nothing.
+
+Node size is automatic (host total RAM/disk minus reserve for the panel/OS). Admin password is NEVER written to any file. Timezone is set to Asia/Dhaka.
+
+**Honest limits:** needs a REAL root VPS (Ubuntu 22.04 or 24.04) with systemd — on a container host (Render / Jupyter / Altare) it installs the Panel only and says why Wings cannot run there. Needs the domain's DNS pointing to the server for HTTPS — without that, Certbot fails and the panel installs on plain HTTP (it says so, and the node uses http too). First run takes 5–15 minutes. A live install on a real VPS is still untested — the full flow is verified end-to-end with stubbed panel/Wings/DB tools (prompts, validation, both HTTPS + HTTP-fallback paths, node + allocations + config + services all confirmed).
+
 One file does everything: `mr-root.sh` (installer) and `mr-root-one.sh` (v3 one-paste version)
 
 ## One-line install
@@ -154,6 +174,7 @@ JTG repo: https://github.com/JishnuTheGamer/Jtg
 - `mr-root-one.sh` — v3 ADVANCE one-paste version: copy the whole file into a terminal, press Enter, get root. No download of itself, dash-safe, no setup by default (fast root — run `bash /root/.mr-setup.sh` inside for Node 20 + git + PM2)
 - `mr-vps-power.sh` — v1 VPS POWER: Docker / privileged / kernel / networking / systemd / KVM check + setup + honest report
 - `mr-nested-vps.sh` — v1 NESTED VPS: VPS-er vitore VPS banao (QEMU/KVM, libvirt + plain-QEMU paths, resource guard)
+- `mr-panel-setup.sh` — v1 MR PANAL SETUP: auto Pterodactyl Panel v1.15.2 + Node (Wings v1.13.5) — red menu, 4 prompts, full auto
 - `README.md` — this file
 
 ## Credits
