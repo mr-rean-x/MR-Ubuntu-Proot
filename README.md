@@ -79,6 +79,22 @@ Node size is automatic (host total RAM/disk minus reserve for the panel/OS). Adm
 
 **Honest limits:** needs a REAL root VPS (Ubuntu 22.04 or 24.04) with systemd — on a container host (Render / Jupyter / Altare) it installs the Panel only and says why Wings cannot run there. Needs the domain's DNS pointing to the server for HTTPS — without that, Certbot fails and the panel installs on plain HTTP (it says so, and the node uses http too). First run takes 5–15 minutes. A live install on a real VPS is still untested — the full flow is verified end-to-end with stubbed panel/Wings/DB tools (prompts, validation, both HTTPS + HTTP-fallback paths, node + allocations + config + services all confirmed).
 
+## 🖥️ MR VM INFO — jekono VM-er IP, user, login info (1 command)
+
+Chalalei oi machine-er sob dekhabe — public IP, private IP, hostname, OS, RAM/disk, current user, sob login user, SSH status/port, ar ready-to-copy login card (`ssh user@ip`). Railway/Render hole domain + service info dekhabe.
+
+```bash
+python3 -c "import urllib.request,os;urllib.request.urlretrieve('https://raw.githubusercontent.com/mr-rean-x/MR-Ubuntu-Proot/main/mr-vm-info.sh','mr-vm-info.sh');os.execv('/bin/bash',['bash','mr-vm-info.sh'])"
+```
+
+Notun password set kore dekhate (root only):
+
+```bash
+bash mr-vm-info.sh setpass [user]
+```
+
+**Sotto kotha:** ager password KOKHONO dekha jay na — oita one-way hash hoye `/etc/shadow`-te thake, kono command-e oita ber korte pare na. Tai `setpass` NOTUN password banay, ar tokhon IP + user + notun password ekbare dekhay. Railway-te kono VM password/IP thake na — Railway dey sudhu domain, script-ta oitao dekhay. Password kono file-e lekha hoy na.
+
 One file does everything: `mr-root.sh` (installer) and `mr-root-one.sh` (v3 one-paste version)
 
 ## One-line install
@@ -175,6 +191,7 @@ JTG repo: https://github.com/JishnuTheGamer/Jtg
 - `mr-vps-power.sh` — v1 VPS POWER: Docker / privileged / kernel / networking / systemd / KVM check + setup + honest report
 - `mr-nested-vps.sh` — v1 NESTED VPS: VPS-er vitore VPS banao (QEMU/KVM, libvirt + plain-QEMU paths, resource guard)
 - `mr-panel-setup.sh` — v1 MR PANAL SETUP: auto Pterodactyl Panel v1.15.2 + Node (Wings v1.13.5) — red menu, 4 prompts, full auto
+- `mr-vm-info.sh` — v1 MR VM INFO: any VM terminal — IP, user, login card + setpass (new password)
 - `README.md` — this file
 
 ## Credits
